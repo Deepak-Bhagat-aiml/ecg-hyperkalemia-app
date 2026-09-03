@@ -1,9 +1,7 @@
 tensorflow-cpu
-keras
 scipy
 scikit-learn
 pandas
-numpy
 matplotlib
 plotly
 huggingface_hub
