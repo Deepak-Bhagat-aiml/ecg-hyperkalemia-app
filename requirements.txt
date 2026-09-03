@@ -1,11 +1,11 @@
-tensorflow-cpu>=2.15.0
-keras>=3.0.0
-scipy>=1.11.0
-scikit-learn>=1.3.0
-pandas>=2.0.0
-numpy<2.0.0
-matplotlib>=3.7.0
-plotly>=5.18.0
-huggingface_hub>=0.20.0
-joblib>=1.3.0
+tensorflow-cpu
+keras
+scipy
+scikit-learn
+pandas
+numpy
+matplotlib
+plotly
+huggingface_hub
+joblib
 
