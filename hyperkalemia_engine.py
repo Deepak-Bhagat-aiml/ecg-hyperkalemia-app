@@ -7,27 +7,37 @@ from scipy import signal as sp_signal
 import joblib
 
 try:
+    import onnxruntime
+except ImportError:
+    onnxruntime = None
+
+try:
     import keras
 except ImportError:
-    from tensorflow import keras
+    try:
+        from tensorflow import keras
+    except ImportError:
+        keras = None
 
 DEFAULT_SCALER_MEAN = 4.90279664e-05
 DEFAULT_SCALER_SCALE = 0.13823536
 
-HF_MODEL_URL = "https://huggingface.co/Deepak932/hyperkalemia-1d-ecg-model/resolve/main/final_hyperkalemia_model.keras"
+HF_ONNX_URL = "https://huggingface.co/Deepak932/hyperkalemia-1d-ecg-model/resolve/main/final_hyperkalemia_model.onnx"
 HF_SCALER_URL = "https://huggingface.co/Deepak932/hyperkalemia-1d-ecg-model/resolve/main/training_scaler.pkl"
 
 class HyperkalemiaPredictor:
     def __init__(self, model_path=None, scaler_path=None):
         base_dir = os.path.dirname(os.path.abspath(__file__))
         if model_path is None:
-            model_path = os.path.join(base_dir, "final_hyperkalemia_model.keras")
+            model_path = os.path.join(base_dir, "final_hyperkalemia_model.onnx")
         if scaler_path is None:
             scaler_path = os.path.join(base_dir, "training_scaler.pkl")
 
         self.model_path = model_path
         self.scaler_path = scaler_path
-        self.model = None
+        self.session = None
+        self.input_name = None
+        self.keras_model = None
         self.scaler = None
         self._load_model_and_scaler()
 
@@ -39,19 +49,28 @@ class HyperkalemiaPredictor:
             print(f"Downloaded {os.path.basename(file_path)} successfully!")
 
     def _load_model_and_scaler(self):
-        self._download_if_missing(self.model_path, HF_MODEL_URL)
+        self._download_if_missing(self.model_path, HF_ONNX_URL)
         self._download_if_missing(self.scaler_path, HF_SCALER_URL)
 
-        print(f"Loading model from {self.model_path}...")
-        self.model = keras.models.load_model(self.model_path)
-        print("Model loaded successfully!")
+        if onnxruntime is not None and self.model_path.endswith(".onnx"):
+            print(f"Loading ONNX model from {self.model_path}...")
+            self.session = onnxruntime.InferenceSession(self.model_path)
+            self.input_name = self.session.get_inputs()[0].name
+            print("ONNX Inference Engine ready!")
+        elif keras is not None:
+            keras_path = self.model_path.replace(".onnx", ".keras")
+            if os.path.exists(keras_path):
+                self.keras_model = keras.models.load_model(keras_path)
+                print("Keras model loaded as fallback!")
+        else:
+            raise RuntimeError("Neither onnxruntime nor keras is available to load the model.")
 
         if os.path.exists(self.scaler_path):
             try:
                 self.scaler = joblib.load(self.scaler_path)
                 print("Scaler loaded successfully from file!")
             except Exception as e:
-                print(f"Warning: Failed to load scaler via joblib ({e}). Initializing fallback scaler...")
+                print(f"Warning: Failed to load scaler via joblib ({e}). Using exact fallback scaler...")
                 self.scaler = None
         else:
             self.scaler = None
@@ -153,7 +172,7 @@ class HyperkalemiaPredictor:
             flat_scaled = self.scaler.transform(flat)
         else:
             flat_scaled = (flat - DEFAULT_SCALER_MEAN) / DEFAULT_SCALER_SCALE
-        return flat_scaled.reshape(n_win, win_len, 1)
+        return flat_scaled.reshape(n_win, win_len, 1).astype(np.float32)
 
     def compute_signal_metrics(self, ecg_500hz):
         duration_sec = len(ecg_500hz) / 500.0
@@ -183,7 +202,11 @@ class HyperkalemiaPredictor:
         windows, time_offsets = self.make_windows(ecg_500, window=window, stride=stride)
 
         windows_scaled = self.scale_windows(windows)
-        probs = self.model.predict(windows_scaled, verbose=0)
+        
+        if self.session is not None:
+            probs = self.session.run(None, {self.input_name: windows_scaled})[0]
+        else:
+            probs = self.keras_model.predict(windows_scaled, verbose=0)
 
         avg_probs = np.mean(probs, axis=0)
         p_normal = float(avg_probs[0])
