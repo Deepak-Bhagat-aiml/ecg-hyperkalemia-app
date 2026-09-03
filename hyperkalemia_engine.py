@@ -3,7 +3,10 @@ import json
 import numpy as np
 import pandas as pd
 from scipy import signal as sp_signal
-import keras
+try:
+    import keras
+except ImportError:
+    from tensorflow import keras
 import joblib
 
 DEFAULT_SCALER_MEAN = 4.90279664e-05
