@@ -1,9 +1,7 @@
-tensorflow-cpu
+tensorflow-cpu==2.15.0
 scipy
 scikit-learn
 pandas
-matplotlib
 plotly
-huggingface_hub
+matplotlib
 joblib
-

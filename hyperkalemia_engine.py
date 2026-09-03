@@ -1,17 +1,21 @@
 import os
 import json
+import urllib.request
 import numpy as np
 import pandas as pd
 from scipy import signal as sp_signal
+import joblib
+
 try:
     import keras
 except ImportError:
     from tensorflow import keras
-import joblib
 
 DEFAULT_SCALER_MEAN = 4.90279664e-05
 DEFAULT_SCALER_SCALE = 0.13823536
-HF_REPO_ID = "Deepak932/hyperkalemia-1d-ecg-model"
+
+HF_MODEL_URL = "https://huggingface.co/Deepak932/hyperkalemia-1d-ecg-model/resolve/main/final_hyperkalemia_model.keras"
+HF_SCALER_URL = "https://huggingface.co/Deepak932/hyperkalemia-1d-ecg-model/resolve/main/training_scaler.pkl"
 
 class HyperkalemiaPredictor:
     def __init__(self, model_path=None, scaler_path=None):
@@ -27,27 +31,20 @@ class HyperkalemiaPredictor:
         self.scaler = None
         self._load_model_and_scaler()
 
+    def _download_if_missing(self, file_path, url):
+        if not os.path.exists(file_path):
+            print(f"Downloading {os.path.basename(file_path)} from Cloud Storage ({url})...")
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            urllib.request.urlretrieve(url, file_path)
+            print(f"Downloaded {os.path.basename(file_path)} successfully!")
+
     def _load_model_and_scaler(self):
-        # If model doesn't exist locally, fetch from Hugging Face Hub
-        if not os.path.exists(self.model_path):
-            print(f"Model not found locally at {self.model_path}. Fetching from Hugging Face: {HF_REPO_ID}...")
-            try:
-                from huggingface_hub import hf_hub_download
-                self.model_path = hf_hub_download(repo_id=HF_REPO_ID, filename="final_hyperkalemia_model.keras")
-                print(f"Model downloaded from Hugging Face to: {self.model_path}")
-            except Exception as e:
-                raise FileNotFoundError(f"Could not load model locally or from Hugging Face: {e}")
+        self._download_if_missing(self.model_path, HF_MODEL_URL)
+        self._download_if_missing(self.scaler_path, HF_SCALER_URL)
 
         print(f"Loading model from {self.model_path}...")
         self.model = keras.models.load_model(self.model_path)
         print("Model loaded successfully!")
-
-        if not os.path.exists(self.scaler_path):
-            try:
-                from huggingface_hub import hf_hub_download
-                self.scaler_path = hf_hub_download(repo_id=HF_REPO_ID, filename="training_scaler.pkl")
-            except Exception:
-                pass
 
         if os.path.exists(self.scaler_path):
             try:
