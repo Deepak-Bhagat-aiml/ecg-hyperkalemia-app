@@ -50,7 +50,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-@st.cache_resource
+@st.cache_resource(show_spinner='Loading Neural Network...')
 def get_predictor():
     return HyperkalemiaPredictor()
 
