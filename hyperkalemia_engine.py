@@ -7,6 +7,11 @@ from scipy import signal as sp_signal
 import joblib
 
 try:
+    import onnxruntime
+except ImportError:
+    onnxruntime = None
+
+try:
     import keras
 except ImportError:
     try:
@@ -17,20 +22,26 @@ except ImportError:
 DEFAULT_SCALER_MEAN = 4.90279664e-05
 DEFAULT_SCALER_SCALE = 0.13823536
 
-HF_MODEL_URL = "https://huggingface.co/Deepak932/hyperkalemia-1d-ecg-model/resolve/main/final_hyperkalemia_model.keras"
+HF_ONNX_URL = "https://huggingface.co/Deepak932/hyperkalemia-1d-ecg-model/resolve/main/final_hyperkalemia_model.onnx"
+HF_KERAS_URL = "https://huggingface.co/Deepak932/hyperkalemia-1d-ecg-model/resolve/main/final_hyperkalemia_model.keras"
 HF_SCALER_URL = "https://huggingface.co/Deepak932/hyperkalemia-1d-ecg-model/resolve/main/training_scaler.pkl"
 
 class HyperkalemiaPredictor:
     def __init__(self, model_path=None, scaler_path=None):
         base_dir = os.path.dirname(os.path.abspath(__file__))
         if model_path is None:
-            model_path = os.path.join(base_dir, "final_hyperkalemia_model.keras")
+            if onnxruntime is not None:
+                model_path = os.path.join(base_dir, "final_hyperkalemia_model.onnx")
+            else:
+                model_path = os.path.join(base_dir, "final_hyperkalemia_model.keras")
         if scaler_path is None:
             scaler_path = os.path.join(base_dir, "training_scaler.pkl")
 
         self.model_path = model_path
         self.scaler_path = scaler_path
-        self.model = None
+        self.session = None
+        self.input_name = None
+        self.keras_model = None
         self.scaler = None
         self._load_model_and_scaler()
 
@@ -42,25 +53,30 @@ class HyperkalemiaPredictor:
             print(f"Downloaded {os.path.basename(file_path)} successfully!")
 
     def _load_model_and_scaler(self):
-        self._download_if_missing(self.model_path, HF_MODEL_URL)
         self._download_if_missing(self.scaler_path, HF_SCALER_URL)
 
-        if not os.path.exists(self.model_path):
-            raise FileNotFoundError(f"Model not found: {self.model_path}")
-
-        if keras is None:
-            raise RuntimeError("Keras/TensorFlow is not available.")
-
-        print(f"Loading Keras model from {self.model_path}...")
-        self.model = keras.models.load_model(self.model_path, compile=False)
-        print("Keras model loaded successfully.")
+        if onnxruntime is not None:
+            onnx_file = self.model_path if self.model_path.endswith(".onnx") else self.model_path.replace(".keras", ".onnx")
+            self._download_if_missing(onnx_file, HF_ONNX_URL)
+            print(f"Loading ONNX model from {onnx_file}...")
+            self.session = onnxruntime.InferenceSession(onnx_file)
+            self.input_name = self.session.get_inputs()[0].name
+            print("ONNX Inference Engine ready!")
+        elif keras is not None:
+            keras_file = self.model_path if self.model_path.endswith(".keras") else self.model_path.replace(".onnx", ".keras")
+            self._download_if_missing(keras_file, HF_KERAS_URL)
+            print(f"Loading Keras model from {keras_file}...")
+            self.keras_model = keras.models.load_model(keras_file, compile=False)
+            print("Keras model loaded successfully!")
+        else:
+            raise RuntimeError("Neither ONNX Runtime nor Keras/TensorFlow is available.")
 
         if os.path.exists(self.scaler_path):
             try:
                 self.scaler = joblib.load(self.scaler_path)
-                print("Training scaler loaded successfully. n_features_in_:", getattr(self.scaler, "n_features_in_", 1))
+                print("Scaler loaded successfully from file! n_features_in_:", getattr(self.scaler, "n_features_in_", 1))
             except Exception as e:
-                print(f"Warning: Failed to load scaler via joblib ({e}). Initializing fallback scaler...")
+                print(f"Warning: Failed to load scaler via joblib ({e}). Using exact fallback scaler...")
                 self.scaler = None
         else:
             self.scaler = None
@@ -145,7 +161,7 @@ class HyperkalemiaPredictor:
         return ecg_mv.astype(np.float64), float(fs)
 
     def preprocess_signal(self, ecg_mv, fs_source, target_fs=500.0):
-        # Already 500 Hz -> no filtering or resampling (matches training)
+        # 500 Hz signal -> no filtering (matches training)
         if abs(fs_source - target_fs) < 1e-6:
             return ecg_mv
 
@@ -213,7 +229,11 @@ class HyperkalemiaPredictor:
         windows, time_offsets = self.make_windows(ecg_500, window=window, stride=stride)
 
         windows_scaled = self.scale_windows(windows)
-        probs = self.model.predict(windows_scaled, verbose=0)
+
+        if self.session is not None:
+            probs = self.session.run(None, {self.input_name: windows_scaled})[0]
+        else:
+            probs = self.keras_model.predict(windows_scaled, verbose=0)
 
         avg_probs = np.mean(probs, axis=0)
         p_normal = float(avg_probs[0])
